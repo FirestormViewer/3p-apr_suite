@@ -375,6 +375,7 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
                                           apr_pool_t *pool)
 {
     int i;
+    pid_t ppid_before_fork = getpid();
     const char * const empty_envp[] = {NULL};
 
     if (!env) { /* Specs require an empty array instead of NULL;
