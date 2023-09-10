@@ -1,6 +1,6 @@
 #include "api_version.h"
 
-#define API_COPYRIGHT "Copyright 2000-2005 The Apache Software " \
+#define API_COPYRIGHT "Copyright 2000-2017 The Apache Software " \
                       "Foundation or its licensors, as applicable."
 
 #define API_LICENSE "Licensed under the Apache License, Version 2.0 " \
@@ -36,7 +36,7 @@
  FILEFLAGS 0x00L
 #endif
 #endif
-#if defined(WINNT) || defined(_WIN64)
+#if defined(WINNT) || defined(WIN64)
  FILEOS 0x40004L
 #else
  FILEOS 0x4L

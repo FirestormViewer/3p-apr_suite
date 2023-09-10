@@ -1,8 +1,5 @@
 #include "apr_version.h"
 
-#define APR_COPYRIGHT "Copyright (c) 2011 The Apache Software " \
-                      "Foundation or its licensors, as applicable."
-
 #define APR_LICENSE \
   "Licensed to the Apache Software Foundation (ASF) under one or more " \
   "contributor license agreements.  See the NOTICE file distributed with " \
@@ -37,7 +34,7 @@
  FILEFLAGS 0x00L
 #endif
 #endif
-#if defined(WINNT) || defined(_WIN64)
+#if defined(WINNT) || defined(WIN64)
  FILEOS 0x40004L
 #else
  FILEOS 0x4L

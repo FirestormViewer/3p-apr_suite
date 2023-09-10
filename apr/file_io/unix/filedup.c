@@ -35,10 +35,8 @@ static apr_status_t file_dup(apr_file_t **new_file,
             return APR_EINVAL;
         }
 #ifdef HAVE_DUP3
-#  ifdef O_CLOEXEC
         if (!((*new_file)->flags & (APR_FOPEN_NOCLEANUP|APR_INHERIT)))
             flags |= O_CLOEXEC;
-#  endif
         rv = dup3(old_file->filedes, (*new_file)->filedes, flags);
 #else
         rv = dup2(old_file->filedes, (*new_file)->filedes);
@@ -143,8 +141,7 @@ APR_DECLARE(apr_status_t) apr_file_setaside(apr_file_t **new_file,
                                             apr_file_t *old_file,
                                             apr_pool_t *p)
 {
-    *new_file = (apr_file_t *)apr_palloc(p, sizeof(apr_file_t));
-    memcpy(*new_file, old_file, sizeof(apr_file_t));
+    *new_file = (apr_file_t *)apr_pmemdup(p, old_file, sizeof(apr_file_t));
     (*new_file)->pool = p;
     if (old_file->buffered) {
         (*new_file)->buffer = apr_palloc(p, old_file->bufsize);
@@ -167,6 +164,8 @@ APR_DECLARE(apr_status_t) apr_file_setaside(apr_file_t **new_file,
         (*new_file)->fname = apr_pstrdup(p, old_file->fname);
     }
     if (!(old_file->flags & APR_FOPEN_NOCLEANUP)) {
+        apr_pool_cleanup_kill(old_file->pool, (void *)old_file,
+                              apr_unix_file_cleanup);
         apr_pool_cleanup_register(p, (void *)(*new_file), 
                                   apr_unix_file_cleanup,
                                   ((*new_file)->flags & APR_INHERIT)
@@ -175,8 +174,6 @@ APR_DECLARE(apr_status_t) apr_file_setaside(apr_file_t **new_file,
     }
 
     old_file->filedes = -1;
-    apr_pool_cleanup_kill(old_file->pool, (void *)old_file,
-                          apr_unix_file_cleanup);
 #ifndef WAITIO_USES_POLL
     (*new_file)->pollset = NULL;
 #endif

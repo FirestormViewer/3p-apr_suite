@@ -128,6 +128,8 @@ APR_DECLARE(apr_status_t) apr_dir_read(apr_finfo_t *finfo, apr_int32_t wanted,
         if (thedir->dirhand == INVALID_HANDLE_VALUE) 
         {
             apr_status_t rv;
+            FINDEX_INFO_LEVELS info_level;
+
             if ((rv = utf8_to_unicode_path(wdirname, sizeof(wdirname) 
                                                    / sizeof(apr_wchar_t), 
                                            thedir->dirname))) {
@@ -136,7 +138,19 @@ APR_DECLARE(apr_status_t) apr_dir_read(apr_finfo_t *finfo, apr_int32_t wanted,
             eos = wcschr(wdirname, '\0');
             eos[0] = '*';
             eos[1] = '\0';
-            thedir->dirhand = FindFirstFileW(wdirname, thedir->w.entry);
+
+            /* Do not request short file names on Windows 7 and later. */
+            if (apr_os_level >= APR_WIN_7) {
+                info_level = FindExInfoBasic;
+            }
+            else {
+                info_level = FindExInfoStandard;
+            }
+
+            thedir->dirhand = FindFirstFileExW(wdirname, info_level,
+                                               thedir->w.entry,
+                                               FindExSearchNameMatch, NULL,
+                                               0);
             eos[0] = '\0';
             if (thedir->dirhand == INVALID_HANDLE_VALUE) {
                 return apr_get_os_error();
@@ -210,7 +224,7 @@ APR_DECLARE(apr_status_t) apr_dir_read(apr_finfo_t *finfo, apr_int32_t wanted,
 #endif
 
     fillin_fileinfo(finfo, (WIN32_FILE_ATTRIBUTE_DATA *) thedir->w.entry, 
-                    0, wanted);
+                    0, 1, fname, wanted);
     finfo->pool = thedir->pool;
 
     finfo->valid |= APR_FINFO_NAME;
@@ -316,8 +330,8 @@ static apr_status_t dir_make_parent(char *path,
     if (APR_STATUS_IS_ENOENT(rv)) { /* Missing an intermediate dir */
         rv = dir_make_parent(path, perm, pool);
 
-        if (rv == APR_SUCCESS) {
-            rv = apr_dir_make (path, perm, pool); /* And complete the path */
+        if (rv == APR_SUCCESS || APR_STATUS_IS_EEXIST(rv)) {
+            rv = apr_dir_make(path, perm, pool); /* And complete the path */
         }
     }
 
@@ -330,23 +344,36 @@ APR_DECLARE(apr_status_t) apr_dir_make_recursive(const char *path,
                                                  apr_pool_t *pool)
 {
     apr_status_t rv = 0;
-    
+
     rv = apr_dir_make (path, perm, pool); /* Try to make PATH right out */
-    
-    if (APR_STATUS_IS_EEXIST(rv)) /* It's OK if PATH exists */
-        return APR_SUCCESS;
-    
+
     if (APR_STATUS_IS_ENOENT(rv)) { /* Missing an intermediate dir */
         char *dir;
-        
+
         rv = apr_filepath_merge(&dir, "", path, APR_FILEPATH_NATIVE, pool);
 
-        if (rv == APR_SUCCESS)
-            rv = dir_make_parent(dir, perm, pool); /* Make intermediate dirs */
-        
-        if (rv == APR_SUCCESS)
+        if (rv != APR_SUCCESS)
+            return rv;
+
+        rv = dir_make_parent(dir, perm, pool); /* Make intermediate dirs */
+
+        if (rv == APR_SUCCESS || APR_STATUS_IS_EEXIST(rv)) {
             rv = apr_dir_make (dir, perm, pool);   /* And complete the path */
+
+            if (APR_STATUS_IS_EEXIST(rv)) {
+                rv = APR_SUCCESS; /* Timing issue; see comment below */
+            }
+        }
     }
+    else if (APR_STATUS_IS_EEXIST(rv)) {
+        /*
+         * It's OK if PATH exists. Timing issues can lead to the
+         * second apr_dir_make being called on existing dir, therefore
+         * this check has to come last.
+         */
+        rv = APR_SUCCESS;
+    }
+
     return rv;
 }
 

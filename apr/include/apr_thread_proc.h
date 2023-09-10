@@ -26,6 +26,7 @@
 #include "apr_file_io.h"
 #include "apr_pools.h"
 #include "apr_errno.h"
+#include "apr_perms_set.h"
 
 #if APR_HAVE_STRUCT_RLIMIT
 #include <sys/time.h>
@@ -114,7 +115,7 @@ typedef enum {
 #define APR_OC_REASON_DEATH         0     /**< child has died, caller must call
                                            * unregister still */
 #define APR_OC_REASON_UNWRITABLE    1     /**< write_fd is unwritable */
-#define APR_OC_REASON_RESTART       2     /**< a restart is occuring, perform
+#define APR_OC_REASON_RESTART       2     /**< a restart is occurring, perform
                                            * any necessary cleanup (including
                                            * sending a special signal to child)
                                            */
@@ -123,7 +124,7 @@ typedef enum {
                                            * kill the child) */
 #define APR_OC_REASON_LOST          4     /**< somehow the child exited without
                                            * us knowing ... buggy os? */
-#define APR_OC_REASON_RUNNING       5     /**< a health check is occuring, 
+#define APR_OC_REASON_RUNNING       5     /**< a health check is occurring, 
                                            * for most maintainence functions
                                            * this is a no-op.
                                            */
@@ -197,7 +198,9 @@ typedef struct apr_other_child_rec_t  apr_other_child_rec_t;
 typedef void *(APR_THREAD_FUNC *apr_thread_start_t)(apr_thread_t*, void*);
 
 typedef enum {
-    APR_KILL_NEVER,             /**< process is never sent any signals */
+    APR_KILL_NEVER,             /**< process is never killed (i.e., never sent
+                                 * any signals), but it will be reaped if it exits
+                                 * before the pool is cleaned up */
     APR_KILL_ALWAYS,            /**< process is sent SIGKILL on apr_pool_t cleanup */
     APR_KILL_AFTER_TIMEOUT,     /**< SIGTERM, wait 3 seconds, SIGKILL */
     APR_JUST_WAIT,              /**< wait forever for the process to complete */
@@ -315,7 +318,7 @@ APR_DECLARE(apr_status_t) apr_thread_once(apr_thread_once_t *control,
 APR_DECLARE(apr_status_t) apr_thread_detach(apr_thread_t *thd);
 
 /**
- * Return the pool associated with the current thread.
+ * Return user data associated with the current thread.
  * @param data The user data associated with the thread.
  * @param key The key to associate with the data
  * @param thread The currently open thread.
@@ -324,7 +327,7 @@ APR_DECLARE(apr_status_t) apr_thread_data_get(void **data, const char *key,
                                              apr_thread_t *thread);
 
 /**
- * Return the pool associated with the current thread.
+ * Set user data associated with the current thread.
  * @param data The user data to associate with the thread.
  * @param key The key to use for associating the data with the thread
  * @param cleanup The cleanup routine to use when the thread is destroyed.
@@ -499,55 +502,6 @@ APR_DECLARE(apr_status_t) apr_procattr_cmdtype_set(apr_procattr_t *attr,
 APR_DECLARE(apr_status_t) apr_procattr_detach_set(apr_procattr_t *attr, 
                                                  apr_int32_t detach);
 
-/**
- * Request OS to tie child-process lifespan to parent process.
- * (Currently supported only on Windows.)
- * @param attr The procattr we care about.
- * @param autokill Nonzero means child lifespan will be tied to calling
- * process lifespan. Default is no.
- */
-APR_DECLARE(apr_status_t) apr_procattr_autokill_set(apr_procattr_t *attr,
-                                                    apr_int32_t autokill);
-// APR_HAS_PROCATTR_AUTOKILL_SET actually has three discernable states. Plain
-// APR doesn't define it, so #if ! defined(APR_HAS_PROCATTR_AUTOKILL_SET) can
-// detect if the APR in hand lacks the extension. Further, though, we #define
-// it to 0 on platforms where we happen to know apr_procattr_autokill_set()
-// will return APR_ENOTIMPL.
-// It doesn't seem to work to #define MACRO as defined(OTHERMACRO) because
-// apparently defined() isn't itself a macro; it doesn't get rescanned. From
-// the preprocessor's point of view, MACRO simply has a funny string value.
-#if defined(WIN32) || defined(_WIN32)
-#define APR_HAS_PROCATTR_AUTOKILL_SET 1 // useful implementation
-#else
-#define APR_HAS_PROCATTR_AUTOKILL_SET 0 // placeholder implementation
-#endif
-
-/**
- * Request apr_proc_create() to constrain the set of handles passed to the
- * child process. On Windows, with an ordinary CreateProcess() call, you get
- * two choices: pass NO handles (bInheritHandles=FALSE), or pass ALL
- * currently-open handles, from anywhere in the process (including libraries!)
- * -- except those specifically marked with HANDLE_FLAG_INHERIT 0.
- * apr_proc_create(), which promises to provide the child process with stdin,
- * stdout, stderr, normally passes bInheritHandles=TRUE. But std::ofstream et
- * al. open files as inheritable, and provide no API by which to mark them
- * otherwise. And since Windows prevents certain operations on files held open
- * by any process, even if inadvertently, confusing bugs ensue.
- * Calling apr_procattr_constrain_handle_set(attr, 1) engages obscure
- * Windows machinery to specifically pass stdin, stdout, stderr -- but no
- * other handles.
- * See http://blogs.msdn.com/b/oldnewthing/archive/2011/12/16/10248328.aspx .
- * apr_procattr_constrain_handle_set() currently only affects apr_proc_create()
- * on Windows.
- * @param attr The procattr we care about.
- * @param constrain On Windows, nonzero means to explicitly constrain the set
- * of handles passed to the new child process. Default is 0, like unmodified
- * APR.
- */
-APR_DECLARE(apr_status_t) apr_procattr_constrain_handle_set(apr_procattr_t *attr,
-                                                            apr_int32_t constrain);
-#define APR_HAS_PROCATTR_CONSTRAIN_HANDLE_SET 1 // extension is present
-
 #if APR_HAVE_STRUCT_RLIMIT
 /**
  * Set the Resource Utilization limits when starting a new process.
@@ -626,6 +580,18 @@ APR_DECLARE(apr_status_t) apr_procattr_group_set(apr_procattr_t *attr,
                                                  const char *groupname);
 
 
+/**
+ * Register permission set function
+ * @param attr The procattr we care about. 
+ * @param perms_set_fn Permission set callback
+ * @param data Data to pass to permission callback function
+ * @param perms Permissions to set
+ */
+APR_DECLARE(apr_status_t) apr_procattr_perms_set_register(apr_procattr_t *attr,
+                                                 apr_perms_setfn_t *perms_set_fn,
+                                                 void *data,
+                                                 apr_fileperms_t perms);
+
 #if APR_HAS_FORK
 /**
  * This is currently the only non-portable call in APR.  This executes 
@@ -681,7 +647,7 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new_proc,
  *            APR_NOWAIT -- return immediately regardless of if the 
  *                          child is dead or not.
  * </PRE>
- * @remark The childs status is in the return code to this process.  It is one of:
+ * @remark The child's status is in the return code to this process.  It is one of:
  * <PRE>
  *            APR_CHILD_DONE     -- child is no longer running.
  *            APR_CHILD_NOTDONE  -- child is still running.
@@ -850,6 +816,13 @@ APR_DECLARE(apr_status_t) apr_setup_signal_thread(void);
  * functions should return 1 if the signal has been handled, 0 otherwise.
  * @param signal_handler The function to call when a signal is received
  * apr_status_t apr_signal_thread((int)(*signal_handler)(int signum))
+ * @note Synchronous signals like SIGABRT/SIGSEGV/SIGBUS/... are ignored by
+ * apr_signal_thread() and thus can't be waited by this function (they remain
+ * handled by the operating system or its native signals interface).
+ * @remark In APR version 1.6 and ealier, SIGUSR2 was part of these ignored
+ * signals and thus was never passed in to the signal_handler. From APR 1.7
+ * this is no more the case so SIGUSR2 can be handled in signal_handler and
+ * acted upon like the other asynchronous signals.
  */
 APR_DECLARE(apr_status_t) apr_signal_thread(int(*signal_handler)(int signum));
 

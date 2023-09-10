@@ -20,16 +20,10 @@
 #include "apr_signal.h"
 #include "apr_random.h"
 
-#if defined(LINUX)
-#include <sys/prctl.h>
-#endif /* LINUX */
-
 /* Heavy on no'ops, here's what we want to pass if there is APR_NO_FILE
  * requested for a specific child handle;
  */
 static apr_file_t no_file = { NULL, -1, };
-
-static int max_fd();
 
 APR_DECLARE(apr_status_t) apr_procattr_create(apr_procattr_t **new,
                                               apr_pool_t *pool)
@@ -42,8 +36,6 @@ APR_DECLARE(apr_status_t) apr_procattr_create(apr_procattr_t **new,
     (*new)->pool = pool;
     (*new)->cmdtype = APR_PROGRAM;
     (*new)->uid = (*new)->gid = -1;
-    (*new)->autokill = 0;
-    (*new)->constrain = 0;
     return APR_SUCCESS;
 }
 
@@ -224,36 +216,17 @@ APR_DECLARE(apr_status_t) apr_procattr_detach_set(apr_procattr_t *attr,
     return APR_SUCCESS;
 }
 
-APR_DECLARE(apr_status_t) apr_procattr_autokill_set(apr_procattr_t *attr, apr_int32_t autokill)
-{
-#if ! defined(LINUX)
-    return APR_ENOTIMPL;
-
-#else /* LINUX */
-    attr->autokill = autokill;
-    return APR_SUCCESS;
-#endif /* LINUX */
-}
-
-APR_DECLARE(apr_status_t) apr_procattr_constrain_handle_set(apr_procattr_t *attr,
-                                                            apr_int32_t constrain)
-{
-    attr->constrain = constrain;
-    return APR_SUCCESS;
-}
-
 APR_DECLARE(apr_status_t) apr_proc_fork(apr_proc_t *proc, apr_pool_t *pool)
 {
     int pid;
+    
+    memset(proc, 0, sizeof(apr_proc_t));
 
     if ((pid = fork()) < 0) {
         return errno;
     }
     else if (pid == 0) {
-        proc->pid = pid;
-        proc->in = NULL;
-        proc->out = NULL;
-        proc->err = NULL;
+        proc->pid = getpid();
 
         apr_random_after_fork(proc);
 
@@ -261,9 +234,6 @@ APR_DECLARE(apr_status_t) apr_proc_fork(apr_proc_t *proc, apr_pool_t *pool)
     }
 
     proc->pid = pid;
-    proc->in = NULL;
-    proc->out = NULL;
-    proc->err = NULL;
 
     return APR_INPARENT;
 }
@@ -379,7 +349,6 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
                                           apr_pool_t *pool)
 {
     int i;
-    pid_t ppid_before_fork = getpid();
     const char * const empty_envp[] = {NULL};
 
     if (!env) { /* Specs require an empty array instead of NULL;
@@ -423,36 +392,7 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
         return errno;
     }
     else if (new->pid == 0) {
-        int status;
         /* child process */
-
-        /*
-         * On Linux, we can request the OS to notify this new child process
-         * with a specified signal when the parent process terminates. We
-         * choose to be "notified" with a SIGKILL: in other words, when the
-         * parent process terminates, Game Over! This setting persists across
-         * execve(). (Thank you John Dubchak for pointing out this feature.)
-         */
-#if ! defined(LINUX)
-        (void)ppid_before_fork;
-#else /* LINUX */
-        if (attr->autokill) {
-            prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0);
-            /*
-             * possible race condition if parent terminated just before our
-             * prctl() call - http://stackoverflow.com/a/36945270/5533635
-             */
-            if (getppid() != ppid_before_fork) {
-                /*
-                 * If parent terminated, we get reassigned to init, which has
-                 * a different ppid. In that case, we should voluntarily exit
-                 * immediately, never mind the execve(). Use a high
-                 * termination code because we're pretending we were killed.
-                 */
-                exit(255);
-            }
-        }
-#endif /* LINUX */
 
         /*
          * If we do exec cleanup before the dup2() calls to set up pipes
@@ -487,7 +427,8 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
         if ((attr->child_in) && (attr->child_in->filedes == -1)) {
             close(STDIN_FILENO);
         }
-        else if (attr->child_in) {
+        else if (attr->child_in &&
+                 attr->child_in->filedes != STDIN_FILENO) {
             dup2(attr->child_in->filedes, STDIN_FILENO);
             apr_file_close(attr->child_in);
         }
@@ -495,7 +436,8 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
         if ((attr->child_out) && (attr->child_out->filedes == -1)) {
             close(STDOUT_FILENO);
         }
-        else if (attr->child_out) {
+        else if (attr->child_out &&
+                 attr->child_out->filedes != STDOUT_FILENO) {
             dup2(attr->child_out->filedes, STDOUT_FILENO);
             apr_file_close(attr->child_out);
         }
@@ -503,19 +445,10 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
         if ((attr->child_err) && (attr->child_err->filedes == -1)) {
             close(STDERR_FILENO);
         }
-        else if (attr->child_err) {
+        else if (attr->child_err &&
+                 attr->child_err->filedes != STDERR_FILENO) {
             dup2(attr->child_err->filedes, STDERR_FILENO);
             apr_file_close(attr->child_err);
-        }
-
-        /* If constrain was requested, explicitly close all file handles above
-         * STDERR_FILENO, up to max_fd().
-         */
-        if (attr->constrain) {
-            int fd, last = max_fd();
-            for (fd = STDERR_FILENO + 1; fd <= last; ++fd) {
-                close(fd);
-            }
         }
 
         apr_signal(SIGCHLD, SIG_DFL); /* not sure if this is needed or not */
@@ -528,10 +461,22 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
                 _exit(-1);   /* We have big problems, the child should exit. */
             }
         }
+        if (!geteuid()) {
+            apr_procattr_pscb_t *c = attr->perms_set_callbacks;
 
+            while (c) {
+                apr_status_t r;
+                r = (*c->perms_set_fn)((void *)c->data, c->perms,
+                                       attr->uid, attr->gid);
+                if (r != APR_SUCCESS && r != APR_ENOTIMPL) {
+                    _exit(-1);
+                }
+                c = c->next;
+            }
+        }
         /* Only try to switch if we are running as root */
         if (attr->gid != -1 && !geteuid()) {
-            if ((status = setgid(attr->gid))) {
+            if (setgid(attr->gid)) {
                 if (attr->errfn) {
                     attr->errfn(pool, errno, "setting of group failed");
                 }
@@ -540,7 +485,7 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
         }
 
         if (attr->uid != -1 && !geteuid()) {
-            if ((status = setuid(attr->uid))) {
+            if (setuid(attr->uid)) {
                 if (attr->errfn) {
                     attr->errfn(pool, errno, "setting of user failed");
                 }
@@ -548,7 +493,7 @@ APR_DECLARE(apr_status_t) apr_proc_create(apr_proc_t *new,
             }
         }
 
-        if ((status = limit_proc(attr)) != APR_SUCCESS) {
+        if (limit_proc(attr) != APR_SUCCESS) {
             if (attr->errfn) {
                 attr->errfn(pool, errno, "setting of resource limits failed");
             }
@@ -776,23 +721,19 @@ APR_DECLARE(apr_status_t) apr_procattr_limit_set(apr_procattr_t *attr,
 }
 #endif /* APR_HAVE_STRUCT_RLIMIT */
 
-static int max_fd()
+APR_DECLARE(apr_status_t) apr_procattr_perms_set_register(apr_procattr_t *attr,
+                                                 apr_perms_setfn_t *perms_set_fn,
+                                                 void *data,
+                                                 apr_fileperms_t perms)
 {
-#if ! defined(LINUX)
-    return 0;
+    apr_procattr_pscb_t *c;
 
-#else /* LINUX */
-    int up;
-#if defined(F_MAXFD)
-    do
-    {
-        up = ::fcntl(0, F_MAXFD);
-    } while (up == -1 && errno == EINTR);
-    if (up == -1)
-#endif /* F_MAXFD */
-        up = ::sysconf(_SC_OPEN_MAX);
-    if (up == -1)
-        up = 1000; /* completely arbitrary */
-    return up;
-#endif /* LINUX */
+    c = apr_palloc(attr->pool, sizeof(apr_procattr_pscb_t));
+    c->data = data;
+    c->perms = perms;
+    c->perms_set_fn = perms_set_fn;
+    c->next = attr->perms_set_callbacks;
+    attr->perms_set_callbacks = c;
+
+    return APR_SUCCESS;
 }
