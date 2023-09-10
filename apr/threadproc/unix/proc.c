@@ -799,11 +799,12 @@ static int max_fd()
     } while (up == -1 && errno == EINTR);
     if (up == -1)
 #endif /* F_MAXFD */
-        up = ::sysconf(_SC_OPEN_MAX);
+        up = sysconf(_SC_OPEN_MAX);
     if (up == -1)
         up = 1000; /* completely arbitrary */
     return up;
 #endif /* LINUX */
+}
 
 APR_DECLARE(apr_status_t) apr_procattr_perms_set_register(apr_procattr_t *attr,
                                                  apr_perms_setfn_t *perms_set_fn,
