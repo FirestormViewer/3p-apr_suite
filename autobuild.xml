@@ -58,9 +58,9 @@
             <key>archive</key>
             <map>
               <key>hash</key>
-              <string>5e1f025d1cebd12db542080aa755257f</string>
+              <string>39702f98867a319b090ee04f22d82762</string>
               <key>url</key>
-              <string>http://automated-builds-secondlife-com.s3.amazonaws.com/ct2/380/943/expat-2.1.1.500375-linux64-500375.tar.bz2</string>
+              <string>http://3p.firestormviewer.org/expat-2.5.0.230021327-linux64-230021327.tar.bz2</string>
             </map>
             <key>name</key>
             <string>linux64</string>
