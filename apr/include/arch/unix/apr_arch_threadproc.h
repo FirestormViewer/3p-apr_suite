@@ -113,6 +113,8 @@ struct apr_procattr_t {
     apr_uid_t   uid;
     apr_gid_t   gid;
     apr_procattr_pscb_t *perms_set_callbacks;
+    apr_int32_t autokill;
+    apr_int32_t constrain;
 };
 
 #endif  /* ! THREAD_PROC_H */
